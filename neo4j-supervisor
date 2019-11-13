@@ -1,0 +1,210 @@
+#!/bin/bash
+
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# Script variables with default value
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+# Cypher query to count the number of nodes
+NEO4J_QUERY_COUNT_NODE="MATCH (n) RETURN count(*)"
+
+# Cypher query to count the number of edges
+NEO4J_QUERY_COUNT_REL="MATCH ()-[r]->() RETURN count(*)"
+
+# Some color variables
+RED='\e[0;31m'
+GREEN='\e[0;32m'
+NC='\e[0m' # No Color
+
+# Thw windows width
+WINDOWS_COLS=$(tput cols)
+WIDTH=$((($WINDOWS_COLS-40)/2))
+
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#  Compute script variables
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+# Script parameters with default values or env values
+NEO4J_HOME="$NEO4J_HOME" # -l: location of a neo4j instance
+
+# Setting the neo4j user to `neo4j` if the env var is empty
+if [[ -z "$NEO4J_USER" ]]; then
+  NEO4J_USER="neo4j" # -u: neo4j user
+fi
+
+# Setting the neo4j password to `neo4j` if the env var is empty
+if [[ -z "$NEO4J_PASSWORD" ]]; then
+  NEO4J_PASSOWRD="neo4j" # -p: password of the user
+fi
+
+# Setting the neo4j connection url to `bolt://localhost:7687` if the env var is empty
+if [[ -z "$NEO4J_CONNECTION" ]]; then
+  NEO4J_CONNECTION="bolt://localhost:7687" # -c: bolt connection url
+fi
+
+
+# Compute parameters with script arguments
+while getopts "l:u:p:c:h" opt; do
+  case $opt in
+    l) NEO4J_HOME="$OPTARG"
+      ;;
+    u) NEO4J_USER="$OPTARG"
+      ;;
+    p) NEO4J_PASSWORD="$OPTARG"
+      ;;
+    c) NEO4J_CONNECTION="$OPTARG"
+      ;;
+    h) echo 'Neo4j supervisor helps you to visualize the load of nodes/edges
+
+Usage: neo4j-supervisor -l /opt/neo4j -c bolt://localhost -u neo4j -p l3tm31n
+  - l: path location of neo4j (or use the env $NEO4J_HOME)
+  - c: bolt connection url (or use the env $NEO4J_CONNECTION | default: `bolt://localhost:7687` )
+  - u: neo4j user (or use the env $NEO4J_USER | default: `neo4j`)
+  - p: neo4j password (or use the env $NEO4J_PASSWORD)
+
+Legend:
+  - red color is for deletion
+  - green color is for creation
+
+How to read the bar chart:
+  - @: 1000 items
+  - #: 100 items
+  - =: 10 items
+  - -: 1 item
+
+So `@@@#====--` means 3142
+'
+      exit 1
+      ;;
+    \?) echo "Invalid option -$OPTARG" 
+        exit 1
+      ;;
+  esac
+done
+
+# check if variables are not set, we prompt the user
+if [[ -z "$NEO4J_HOME" ]]; then 
+  read -e -p "Path location of Neo4j: " -i "$NEO4J_HOME" NEO4J_HOME
+fi
+if [[ -z "$NEO4J_PASSWORD" ]]; then
+  read -e -sp "Password for $NEO4J_USER: " -i "$NEO4J_PASSWORD" NEO4J_PASSWORD
+fi
+
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# Script  functions
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ # Check the status of the return value `retval=$?`
+CHECK() {
+ if [[ $1 -gt 0 ]]; then
+   echo "An error occured in the connection with Neo4j"
+   exit 1
+ fi
+}
+
+# Execute a cypher query (with one row and one result) and return the result
+# - the cypher  query
+NEO4J_GET_VALUE() {
+  VALUE=$($NEO4J_HOME/bin/cypher-shell --format plain -a "$NEO4J_CONNECTION" -u $NEO4J_USER -p $NEO4J_PASSWORD "$1" | tail -n 1)
+  CHECK $?
+  echo $VALUE
+}
+
+# Display a line chart
+# - the number for the line chart
+DISPLAY_LINE() {
+  VALUE=""
+  CURRENT=$1
+  if (( $1 < 0 )); then
+    CURRENT=$(($1*-1))
+  fi
+
+  THOUSAND=$(($CURRENT/1000))
+  for i in $(seq 1 $THOUSAND); do
+    VALUE="$VALUE@"
+  done
+  
+  CURRENT=$(($CURRENT-$THOUSAND*1000))
+  HUNDRER=$(($CURRENT/100))
+  for i in $(seq 1 $HUNDRER); do
+    VALUE="$VALUE#"
+  done
+
+  CURRENT=$(($CURRENT-$HUNDRER*100))
+  TEN=$(($CURRENT/10))
+  for i in $(seq 1 $TEN); do
+    VALUE="$VALUE="
+  done
+
+  CURRENT=$(($CURRENT-$TEN*10))
+  for i in $(seq 1 $CURRENT); do
+    VALUE="$VALUE-"
+  done
+  
+  if (( ${#VALUE} > $WIDTH )); then
+    VALUE=$(printf "$VALUE" | cut -c 1-$(($WIDTH-1)))
+    VALUE="$VALUE~"
+  fi
+
+  if (( $1 >= 0 )); then
+    printf "${GREEN}%-${WIDTH}s${NC}" "$VALUE"
+  else
+    printf "${RED}%-${WIDTH}s${NC}" "$VALUE"
+  fi
+}
+
+ 
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# Main program
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+# Init of prev & current variables for nodes
+NODE_VALUE=$(NEO4J_GET_VALUE "$NEO4J_QUERY_COUNT_NODE")
+CHECK $?
+NODE_PREV_VALUE=$NODE_VALUE
+CHECK $?
+ 
+# Init of prev & current variables for edges
+REL_VALUE=$(NEO4J_GET_VALUE "$NEO4J_QUERY_COUNT_REL")
+REL_PREV_VALUE=$REL_VALUE
+
+# Init timestamp
+TP_CURRENT=$(date +%s%3N)
+TP_PREV_NODE=$TP_CURRENT
+TP_PREV_REL=$TP_CURRENT
+
+while true
+do
+
+  # Compute values for nodes
+  NODE_VALUE=$(NEO4J_GET_VALUE "$NEO4J_QUERY_COUNT_NODE")
+  CHECK $?
+  NODE_DIFF=$(($NODE_VALUE-$NODE_PREV_VALUE))
+  NODE_PREV_VALUE=$NODE_VALUE
+  
+  TP_CURRENT=$(date +%s%3N)
+  TP_NODE_DIFF=$(($TP_CURRENT-$TP_PREV_NODE))
+  TP_PREV_NODE=$TP_CURRENT
+
+  # Compute values foredges 
+  REL_VALUE=$(NEO4J_GET_VALUE "$NEO4J_QUERY_COUNT_REL")
+  CHECK $?
+  REL_DIFF=$(($REL_VALUE-$REL_PREV_VALUE))
+  REL_PREV_VALUE=$REL_VALUE
+  
+  TP_CURRENT=$(date +%s%3N)
+  TP_REL_DIFF=$(($TP_CURRENT-$TP_PREV_REL))
+  TP_PREV_REL=$TP_CURRENT
+
+  # Display a new line
+  NODE_SPEED=$(($NODE_DIFF/$TP_NODE_DIFF))
+  REL_SPEED=$(($REL_DIFF/$TP_REL_DIFF))
+  echo -ne '\nNodes ['
+  DISPLAY_LINE $NODE_DIFF
+  echo -ne "] $(printf %03d ${NODE_SPEED#-}) N/ms  Edges ["
+  DISPLAY_LINE $REL_DIFF
+  echo -n "] $(printf %03d ${REL_SPEED#-}) R/ms"
+
+done
+
